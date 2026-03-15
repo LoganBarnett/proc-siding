@@ -60,6 +60,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [
+      # Metal GPU stress test for exercising pressure detection.
+      (pkgs.callPackage ../derivations/mlx-metal-test/default.nix { })
+    ];
+
+
     # User-level agent: the Metal detector calls `metalps`, which requires
     # access to the logged-in user's GPU context.
     launchd.user.agents.proc-siding = {

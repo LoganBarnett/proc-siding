@@ -54,6 +54,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [
+      # OpenGL ES 2.0 benchmark for generating GPU load to exercise pressure
+      # detection.
+      pkgs.glmark2
+    ];
+
     # Run as root to read /proc/<pid>/fd for GPU device open-file detection.
     systemd.services.proc-siding = {
       description = "proc-siding GPU pressure monitor";
