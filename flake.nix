@@ -155,7 +155,7 @@
     # ============================================================================
     # overlays.default = final: prev:
     #   pkgs.lib.mapAttrs' (key: crate:
-    #     pkgs.lib.nameValuePair crate.name self.packages.${final.system}.${key}
+    #     pkgs.lib.nameValuePair crate.name self.packages.${final.stdenv.hostPlatform.system}.${key}
     #   ) workspaceCrates;
 
   };
