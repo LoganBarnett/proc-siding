@@ -3,12 +3,16 @@
   inputs = {
     # LLM: Do NOT change this URL unless explicitly directed. This is the
     # correct format for nixpkgs stable (25.11 is correct, not nixos-25.11).
+    crane.url = "github:ipetkov/crane";
+    metalps = {
+      url = "git+ssh://git@gitea.proton:2222/logan/metalps";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/25.11";
     rust-overlay.url = "github:oxalica/rust-overlay";
-    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, crane }@inputs: let
+  outputs = { self, nixpkgs, rust-overlay, crane, metalps }@inputs: let
     forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
     overlays = [
       (import rust-overlay)
@@ -137,6 +141,12 @@
       program = "${self.packages.${system}.${key}}/bin/${crate.binary}";
     }) workspaceCrates);
 
+
+    # ============================================================================
+    # MODULES
+    # ============================================================================
+    nixosModules.default = import ./nix/modules/nixos.nix { inherit self; };
+    darwinModules.default = import ./nix/modules/darwin.nix { inherit self metalps; };
 
     # ============================================================================
     # OVERLAYS
