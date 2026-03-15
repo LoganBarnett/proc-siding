@@ -3,6 +3,7 @@
   config,
   lib,
   pkgs,
+  system,
   ...
 }:
 let
@@ -16,7 +17,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.system}.default;
+      default = self.packages.${system}.default;
       defaultText = lib.literalExpression
         "proc-siding.packages.\${system}.default";
       description = "The proc-siding package to use.";
