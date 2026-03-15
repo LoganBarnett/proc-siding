@@ -39,11 +39,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1772489844,
-        "narHash": "sha256-JAVqHl10b0y+e2vmx52OTR1yz48WiwJNC4SRRG7nsVY=",
+        "lastModified": 1773605056,
+        "narHash": "sha256-NOqVn6UFilfuzsS1PrVjIOlqxa+yuMS85cZ/zJzxvL0=",
         "ref": "refs/heads/main",
-        "rev": "a603a9e8b570961c9811808527e52ca27ae3bb26",
-        "revCount": 6,
+        "rev": "3f44475ae4bd365ae437d2fea6f92a420e7cfef2",
+        "revCount": 7,
         "type": "git",
         "url": "ssh://git@gitea.proton:2222/logan/metalps"
       },
