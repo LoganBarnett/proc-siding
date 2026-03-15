@@ -1,0 +1,22 @@
+[package]
+name = "proc-siding-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "proc-siding"
+path = "src/main.rs"
+
+[dependencies]
+proc-siding-lib = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tap = { workspace = true }  # For method chaining, reduces superfluous locals
