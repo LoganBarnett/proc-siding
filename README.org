@@ -1,64 +1,208 @@
-#+title:     <project-name>
+#+title:     proc-siding
 #+language:  en
 
 * Introduction
 
-Briefly describe the problem this project solves and how it solves it.
-Cover:
+proc-siding monitors GPU utilisation and pauses a watched workload when
+sustained external pressure is detected, resuming it once the pressure clears.
+The motivating case is a garage-queue worker running large language model
+inference: when a game or other GPU-heavy process launches on the same machine,
+proc-siding pauses the worker so the GPU is fully available, then resumes it
+automatically once the external load is gone.
 
-- What pain point or workflow does this address?
-- How does this project fit into a user's existing toolchain?
-- What are the two or three things a reader should know immediately?
+The monitor is built around three pluggable concepts — a *detector* that
+measures GPU pressure, a *process discovery* mechanism that identifies the
+PIDs of the owned workload (so they are excluded from the pressure measurement),
+and an *action* that is called on state transitions.  All three are selected
+via a TOML config file; no recompilation is needed to switch between GPU
+vendors or action types.
 
-Keep this section short — two or three paragraphs at most.
+Hysteresis prevents flapping: N consecutive above-threshold samples are
+required before pausing, and N consecutive below-threshold samples before
+resuming.
 
 * Installation
 
-Explain how to install the project.  Cover at minimum:
+** From source
 
-- Installing from source (include any toolchain or system prerequisites).
-- Installing a pre-built release artifact, if applicable.
-- Installing the library crate via ~Cargo.toml~, if the project ships
-  one.
+Requires a Rust toolchain (stable, 1.78+) and, for the relevant detector, the
+platform GPU tools described under [[*Detectors]].
+
+#+begin_src sh
+git clone <repo-url> proc-siding
+cd proc-siding
+cargo build --release
+# binary at target/release/proc-siding
+#+end_src
+
+** Nix
+
+The flake exports ~nixosModules.default~ (systemd service, runs as root) and
+~darwinModules.default~ (launchd user agent).  Add the flake as an input and
+import the appropriate module, then enable the service and supply settings:
+
+#+begin_src nix
+services.proc-siding = {
+  enable = true;
+  settings = {
+    pressure = { threshold = 25; hysteresis = 3; poll_interval_ms = 2000; };
+    detector.kind = "amd";           # or "nvidia" / "metal"
+    process_discovery = { kind = "systemd_unit"; unit = "ollama.service"; };
+    action = {
+      kind = "http_post";
+      pressure_url = "http://127.0.0.1:9091/control/pause";
+      clear_url    = "http://127.0.0.1:9091/control/resume";
+    };
+  };
+};
+#+end_src
 
 * Usage
 
-Show the most common invocations with concrete, copy-pasteable
-examples.  Prefer real-looking inputs and outputs over abstract
-placeholders.
+#+begin_src sh
+proc-siding --config /etc/proc-siding/config.toml
+#+end_src
 
-Organize sub-sections around the features a user is most likely to
-reach for first.  Avoid exhaustively listing every flag here — the
-~--help~ output covers that.
+Log level and format are controlled via environment variables:
+
+#+begin_src sh
+RUST_LOG=debug proc-siding --config config.toml   # verbose per-tick output
+RUST_LOG=info  proc-siding --config config.toml   # transitions only (default)
+#+end_src
+
+At ~INFO~ level the service is quiet except on state changes:
+
+#+begin_example
+INFO proc_siding_lib::monitor: Starting pressure monitor threshold=25.0 hysteresis=3 poll_interval_ms=2000
+INFO proc_siding_lib::monitor: GPU pressure sustained; pausing worker pressure=45.0 contributors="glmark2-es2-wayland"
+INFO proc_siding_lib::monitor: GPU pressure cleared; resuming worker pressure=8.0
+#+end_example
+
+At ~DEBUG~ level every poll tick is logged, including the current contributor
+list and hysteresis counters.
+
+* Configuration
+
+All settings live in a single TOML file passed via ~--config~.
+
+#+begin_src toml
+[pressure]
+threshold        = 25     # percent, 0–100; default 25
+hysteresis       = 3      # consecutive samples before state change; default 3
+poll_interval_ms = 2000   # default 2000
+
+[detector]
+kind = "amd"              # "amd" | "nvidia" | "metal"
+
+[process_discovery]
+kind = "systemd_unit"     # "systemd_unit" | "pid" | "process_name"
+unit = "ollama.service"   # for systemd_unit
+# pid     = 1234          # for pid
+# pattern = "ollama"      # for process_name (pgrep -f)
+
+[action]
+kind         = "http_post"                          # "http_post" | "exec"
+pressure_url = "http://127.0.0.1:9091/control/pause"
+clear_url    = "http://127.0.0.1:9091/control/resume"
+# For exec:
+# pressure_cmd = "systemctl stop my-worker"
+# clear_cmd    = "systemctl start my-worker"
+#+end_src
+
+** Detectors
+
+| ~kind~    | Platform | Mechanism                                                        | Privilege     |
+|-----------+----------+------------------------------------------------------------------+---------------|
+| ~amd~     | Linux    | ~/proc/<pid>/fd~ scan for ~/dev/dri/~; sysfs ~gpu_busy_percent~ | root required |
+| ~nvidia~  | Linux    | ~/proc/<pid>/fd~ scan for ~/dev/nvidia~; ~nvidia-smi~           | root required |
+| ~metal~   | macOS    | ~metalps --json~; sums ~gpu_percent~ of non-owned processes      | user-level    |
+
+The AMD and NVIDIA detectors only report pressure when at least one
+non-excluded process has the GPU device file open.  This means the raw sysfs /
+nvidia-smi utilisation figure is suppressed entirely if the only GPU users are
+the owned workload — preventing false positives from the watched process's own
+activity.
+
+The Metal detector requires ~metalps~ on ~PATH~.  The Nix Darwin module wires
+this automatically.
+
+** Process discovery
+
+| ~kind~           | Mechanism                                                            | Best for        |
+|------------------+----------------------------------------------------------------------+-----------------|
+| ~systemd_unit~   | Reads ~/sys/fs/cgroup/…/<unit>.service/cgroup.procs~                 | Linux systemd   |
+| ~process_name~   | ~pgrep -f <pattern>~ + recursive child walk                          | macOS / scripts |
+| ~pid~            | Explicit PID; walks ~/proc/<pid>/task/<pid>/children~ (Linux) or ~pgrep -P~ (macOS) | Testing         |
+
+~systemd_unit~ is the most reliable on Linux because it captures the entire
+cgroup tree without requiring a name match.
 
 * Gotchas and Tradeoffs
 
-Document the non-obvious behaviors and design decisions that a user
-is likely to trip over:
+- *AMD/NVIDIA require root.*  The detectors read ~/proc/<pid>/fd~ for
+  processes they do not own, which requires ~CAP_SYS_PTRACE~ or running as
+  root.  The systemd service runs as root for this reason.
 
-- Default behaviors that differ from what users might expect.
-- Known limitations (finite color palette, heuristic detection, etc.).
-- Performance or correctness tradeoffs made deliberately.
-- Anything where "it depends" or "by design" is the honest answer.
+- *GPU utilisation is not attributed per-process on Linux.*  The AMD and
+  NVIDIA detectors report the overall GPU busy percentage (from sysfs or
+  nvidia-smi) whenever any external process has the device open.  If multiple
+  external processes share the GPU, the reported figure is the total — there
+  is no per-process split.
 
-* How to Exercise Various Features
+- *The ~metal~ detector blocks for ~sample_interval_ms~ per poll.*  Each call
+  to ~metalps~ takes one sample interval to complete, so effective poll
+  latency is ~poll_interval_ms + sample_interval_ms~ (default ~2500 ms~).
 
-Provide a brief tour of less-obvious knobs:
+- *Kernel truncates ~/proc/<pid>/comm~ at 15 characters.*  The contributor
+  name in log output may be truncated for processes with long names.
 
-- Environment variables that mirror CLI flags.
-- Flags that interact non-trivially with each other.
-- Edge cases worth demonstrating (empty input, special characters,
-  large input, etc.).
+- *Hysteresis applies symmetrically.*  The same counter threshold governs both
+  the pause and the resume.  There is no way to configure asymmetric
+  hysteresis (e.g. fast-pause / slow-resume) without changing the source.
 
-This section can be more terse than the main Usage section — its
-purpose is discoverability, not a tutorial.
+* How to Exercise GPU Pressure
+
+** Linux (AMD / NVIDIA)
+
+~glmark2~ is included in ~environment.systemPackages~ when the service is
+enabled, so it is available on any host running proc-siding.
+
+#+begin_src sh
+XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0 \
+  glmark2-es2-wayland &
+journalctl -fu proc-siding
+#+end_src
+
+Watch for ~GPU pressure sustained~ in the log after roughly
+~hysteresis × poll_interval_ms~ milliseconds (~6 s~ at defaults), then
+~GPU pressure cleared~ after glmark2 exits.
+
+** macOS (Metal)
+
+~mlx-metal-test~ is included in ~environment.systemPackages~ when the service
+is enabled.
+
+#+begin_src sh
+mlx-metal-test &
+tail -f /tmp/proc-siding.log
+#+end_src
+
+Or stream logs via Console.app / ~log stream~.  The log file path is
+configured via ~services.proc-siding.logFile~ (default ~/tmp/proc-siding.log~).
+
+** Debug logging
+
+Set ~RUST_LOG=debug~ (in the environment or in the systemd unit's
+~Environment=~ / launchd ~EnvironmentVariables~) to see every poll tick with
+contributor names and hysteresis counter values.
 
 * Contributing
 
-Summarize the contribution workflow and link to the full guide:
+Run the test suite with ~cargo test~.  Format with ~cargo fmt~ and lint with
+~cargo clippy~ before submitting changes.
 
-- How to run the test suite.
-- Code formatting and lint requirements.
-- Where to open issues or send patches.
-
-See [[file:CONTRIBUTING.org][CONTRIBUTING.org]] for details.
+The crate structure keeps all business logic in ~crates/lib~ and limits
+~crates/cli~ to wiring.  New detector, discovery, or action implementations
+belong in ~crates/lib/src/detector.rs~, ~discovery.rs~, or ~action.rs~
+respectively, with a corresponding variant added to ~crates/lib/src/config.rs~
+and wired in ~crates/cli/src/main.rs~.
