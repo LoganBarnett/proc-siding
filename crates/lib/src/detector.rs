@@ -29,8 +29,13 @@ pub enum DetectorError {
 /// The `excluded` set contains PIDs owned by the watched process tree; these
 /// are subtracted from the measurement so that the owned workload does not
 /// incorrectly look like external pressure.
+///
+/// Returns `(pressure_pct, contributors)` where `contributors` is the list
+/// of exec names (from `/proc/<pid>/comm` on Linux, or the process name
+/// reported by the platform) of non-excluded processes currently using the
+/// GPU.  Empty when pressure is zero.
 pub trait PressureDetector: Send + Sync {
-    fn sample(&self, excluded: &HashSet<Pid>) -> Result<f64, DetectorError>;
+    fn sample(&self, excluded: &HashSet<Pid>) -> Result<(f64, Vec<String>), DetectorError>;
 }
 
 // ── Linux helpers ─────────────────────────────────────────────────────────────
@@ -53,16 +58,18 @@ fn pid_has_device_fd(pid: Pid, pattern: &str) -> bool {
     false
 }
 
-/// Returns true if any PID not in `excluded` currently has the device open.
-/// Requires root or CAP_SYS_PTRACE to read other processes' fd directories.
+/// Returns the exec names of all non-excluded PIDs that currently have the
+/// device open.  Reads `/proc/<pid>/comm` for the name; falls back to
+/// `"pid:<N>"` if the file is unreadable.  Requires root or CAP_SYS_PTRACE.
 #[cfg(target_os = "linux")]
-fn any_external_pid_has_device(excluded: &HashSet<Pid>, device_pattern: &str) -> bool {
+fn external_device_users(excluded: &HashSet<Pid>, device_pattern: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
+        return vec![];
     };
+    let mut names = Vec::new();
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
         let Ok(pid) = name_str.parse::<Pid>() else {
             continue;
         };
@@ -70,10 +77,17 @@ fn any_external_pid_has_device(excluded: &HashSet<Pid>, device_pattern: &str) ->
             continue;
         }
         if pid_has_device_fd(pid, device_pattern) {
-            return true;
+            let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .unwrap_or_default();
+            let comm = comm.trim();
+            names.push(if comm.is_empty() {
+                format!("pid:{pid}")
+            } else {
+                comm.to_string()
+            });
         }
     }
-    false
+    names
 }
 
 // ── AMD GPU detector ──────────────────────────────────────────────────────────
@@ -123,19 +137,18 @@ impl AmdGpuDetector {
 
 #[cfg(target_os = "linux")]
 impl PressureDetector for AmdGpuDetector {
-    fn sample(&self, excluded: &HashSet<Pid>) -> Result<f64, DetectorError> {
-        // If no external process has a DRM fd open, there is no external
-        // pressure — skip the sysfs read entirely.
-        if !any_external_pid_has_device(excluded, "/dev/dri/") {
-            return Ok(0.0);
+    fn sample(&self, excluded: &HashSet<Pid>) -> Result<(f64, Vec<String>), DetectorError> {
+        let contributors = external_device_users(excluded, "/dev/dri/");
+        if contributors.is_empty() {
+            return Ok((0.0, vec![]));
         }
-        Self::read_busy_percent()
+        Ok((Self::read_busy_percent()?, contributors))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 impl PressureDetector for AmdGpuDetector {
-    fn sample(&self, _excluded: &HashSet<Pid>) -> Result<f64, DetectorError> {
+    fn sample(&self, _excluded: &HashSet<Pid>) -> Result<(f64, Vec<String>), DetectorError> {
         Err(DetectorError::SysfsRead {
             path: String::new(),
             source: std::io::Error::new(
@@ -152,9 +165,10 @@ pub struct NvidiaGpuDetector;
 
 #[cfg(target_os = "linux")]
 impl PressureDetector for NvidiaGpuDetector {
-    fn sample(&self, excluded: &HashSet<Pid>) -> Result<f64, DetectorError> {
-        if !any_external_pid_has_device(excluded, "/dev/nvidia") {
-            return Ok(0.0);
+    fn sample(&self, excluded: &HashSet<Pid>) -> Result<(f64, Vec<String>), DetectorError> {
+        let contributors = external_device_users(excluded, "/dev/nvidia");
+        if contributors.is_empty() {
+            return Ok((0.0, vec![]));
         }
         // Query overall utilization from nvidia-smi.  Per-process utilization
         // would require parsing a different query; total is a good enough proxy
@@ -179,16 +193,17 @@ impl PressureDetector for NvidiaGpuDetector {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let line = stdout.lines().next().unwrap_or("").trim();
-        line.parse::<f64>().map_err(|_| DetectorError::ParseError {
+        let pct = line.parse::<f64>().map_err(|_| DetectorError::ParseError {
             path: "nvidia-smi output".to_string(),
             value: line.to_string(),
-        })
+        })?;
+        Ok((pct, contributors))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 impl PressureDetector for NvidiaGpuDetector {
-    fn sample(&self, _excluded: &HashSet<Pid>) -> Result<f64, DetectorError> {
+    fn sample(&self, _excluded: &HashSet<Pid>) -> Result<(f64, Vec<String>), DetectorError> {
         Err(DetectorError::NvidiaSmi(
             "NVIDIA GPU detector is only supported on Linux".to_string(),
         ))
@@ -204,6 +219,9 @@ impl PressureDetector for NvidiaGpuDetector {
 struct MetalpsProcess {
     pid: i32,
     gpu_percent: f64,
+    /// Process name as reported by metalps; falls back to `"pid:<N>"` if absent.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -225,7 +243,7 @@ impl Default for MetalGpuDetector {
 }
 
 impl PressureDetector for MetalGpuDetector {
-    fn sample(&self, excluded: &HashSet<Pid>) -> Result<f64, DetectorError> {
+    fn sample(&self, excluded: &HashSet<Pid>) -> Result<(f64, Vec<String>), DetectorError> {
         let output = std::process::Command::new("metalps")
             .args([
                 "--json",
@@ -250,13 +268,17 @@ impl PressureDetector for MetalGpuDetector {
                 DetectorError::MetalJsonParse(e.to_string())
             })?;
 
-        let total: f64 = parsed
-            .processes
-            .iter()
-            .filter(|p| !excluded.contains(&(p.pid as u32)))
-            .map(|p| p.gpu_percent)
-            .sum();
+        let mut total = 0.0;
+        let mut contributors = Vec::new();
+        for p in parsed.processes.iter().filter(|p| !excluded.contains(&(p.pid as u32))) {
+            if p.gpu_percent > 0.0 {
+                total += p.gpu_percent;
+                let name = p.name.clone()
+                    .unwrap_or_else(|| format!("pid:{}", p.pid));
+                contributors.push(name);
+            }
+        }
 
-        Ok(total.min(100.0))
+        Ok((total.min(100.0), contributors))
     }
 }

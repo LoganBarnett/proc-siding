@@ -55,7 +55,7 @@ impl Monitor {
                 }
             };
 
-            let pressure = match self.detector.sample(&owned_pids) {
+            let (pressure, contributors) = match self.detector.sample(&owned_pids) {
                 Ok(p) => p,
                 Err(e) => {
                     warn!(error = %e, "Detector sample failed; skipping tick");
@@ -64,13 +64,13 @@ impl Monitor {
                 }
             };
 
-            debug!(pressure, paused, above, below, "Pressure tick");
+            debug!(pressure, paused, above, below, contributors = contributors.join(", "), "Pressure tick");
 
             if pressure > self.config.threshold {
                 above += 1;
                 below = 0;
                 if above >= self.config.hysteresis && !paused {
-                    info!(pressure, "GPU pressure sustained; pausing worker");
+                    info!(pressure, contributors = contributors.join(", "), "GPU pressure sustained; pausing worker");
                     match self.action.on_pressure() {
                         Ok(()) => paused = true,
                         Err(e) => error!(error = %e, "on_pressure action failed"),
