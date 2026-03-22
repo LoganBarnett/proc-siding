@@ -26,7 +26,7 @@ resuming.
 ** From source
 
 Requires a Rust toolchain (stable, 1.78+) and, for the relevant detector, the
-platform GPU tools described under [[*Detectors]].
+platform GPU tools described under [[Detectors]].
 
 #+begin_src sh
 git clone <repo-url> proc-siding
