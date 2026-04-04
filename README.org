@@ -3,19 +3,24 @@
 
 * Introduction
 
-proc-siding monitors GPU utilisation and pauses a watched workload when
-sustained external pressure is detected, resuming it once the pressure clears.
-The motivating case is a garage-queue worker running large language model
-inference: when a game or other GPU-heavy process launches on the same machine,
-proc-siding pauses the worker so the GPU is fully available, then resumes it
-automatically once the external load is gone.
+proc-siding is a general-purpose pressure monitor for safe-idle-worker
+governance.  It watches a resource for sustained external pressure and triggers
+configurable actions when that pressure crosses a threshold — then reverses
+those actions once the pressure clears.
 
 The monitor is built around three pluggable concepts — a *detector* that
-measures GPU pressure, a *process discovery* mechanism that identifies the
+measures resource pressure, a *process discovery* mechanism that identifies the
 PIDs of the owned workload (so they are excluded from the pressure measurement),
 and an *action* that is called on state transitions.  All three are selected
-via a TOML config file; no recompilation is needed to switch between GPU
-vendors or action types.
+via a TOML config file; no recompilation is needed to switch between resource
+types or action types.
+
+The motivating use case is GPU arbitration: a garage-queue worker runs large
+language model inference on a shared machine.  When a game or other GPU-heavy
+process launches, proc-siding pauses the worker so the GPU is fully available,
+then resumes it automatically once the external load is gone.  But the core
+mechanism is resource-agnostic — any detector that produces a 0–100 pressure
+value can drive it.
 
 Hysteresis prevents flapping: N consecutive above-threshold samples are
 required before pausing, and N consecutive below-threshold samples before
@@ -25,8 +30,8 @@ resuming.
 
 ** From source
 
-Requires a Rust toolchain (stable, 1.78+) and, for the relevant detector, the
-platform GPU tools described under [[Detectors]].
+Requires a Rust toolchain (stable, 1.78+) and, for GPU detectors, the
+platform tools described under [[Detectors]].
 
 #+begin_src sh
 git clone <repo-url> proc-siding
@@ -74,8 +79,8 @@ At ~INFO~ level the service is quiet except on state changes:
 
 #+begin_example
 INFO proc_siding_lib::monitor: Starting pressure monitor threshold=25.0 hysteresis=3 poll_interval_ms=2000
-INFO proc_siding_lib::monitor: GPU pressure sustained; pausing worker pressure=45.0 contributors="glmark2-es2-wayland"
-INFO proc_siding_lib::monitor: GPU pressure cleared; resuming worker pressure=8.0
+INFO proc_siding_lib::monitor: Pressure sustained; triggering actions pressure=45.0 contributors="glmark2-es2-wayland"
+INFO proc_siding_lib::monitor: Pressure cleared; triggering actions pressure=8.0
 #+end_example
 
 At ~DEBUG~ level every poll tick is logged, including the current contributor
@@ -173,9 +178,9 @@ XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0 \
 journalctl -fu proc-siding
 #+end_src
 
-Watch for ~GPU pressure sustained~ in the log after roughly
+Watch for ~Pressure sustained~ in the log after roughly
 ~hysteresis × poll_interval_ms~ milliseconds (~6 s~ at defaults), then
-~GPU pressure cleared~ after glmark2 exits.
+~Pressure cleared~ after glmark2 exits.
 
 ** macOS (Metal)
 
