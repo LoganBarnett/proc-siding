@@ -2,7 +2,7 @@
 #+author:    Logan Barnett
 #+date:      <2026-04-03 Thu>
 
-* IN-PROGRESS Add ~Http~ variant to ~ActionConfig~ with method and Unix socket URL fields
+* DONE Add ~Http~ variant to ~ActionConfig~ with method and Unix socket URL fields
 
 In ~crates/lib/src/config.rs~, add a new ~Http~ variant to ~ActionConfig~:
 
@@ -21,7 +21,7 @@ URLs use the scheme ~unix:/path/to/sock:/url-path~ for Unix sockets and
 Also add ~extra_actions: Vec<ActionConfig>~ (default empty) to ~AppConfig~ so
 hosts can layer additional side-effect actions alongside the primary one.
 
-* TODO Generalize HTTP action to support configurable methods and Unix sockets
+* IN-PROGRESS Generalize HTTP action to support configurable methods and Unix sockets
 
 In ~crates/lib/src/action.rs~:
 
