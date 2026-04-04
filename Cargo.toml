@@ -38,6 +38,8 @@ toml = "0.8"
 # Error handling
 thiserror = "2.0"
 
+# Testing
+tempfile = "3"
 
 # Shared library
 proc-siding-lib = { path = "crates/lib" }

@@ -44,7 +44,7 @@ In ~crates/lib/src/monitor.rs~, change the ~action~ field from
 On pressure/clear transitions, iterate all actions.  Log errors from
 individual actions but continue calling the rest.
 
-* IN-PROGRESS Wire ~Http~ config variant and ~extra_actions~ in ~main.rs~
+* DONE Wire ~Http~ config variant and ~extra_actions~ in ~main.rs~
 
 In ~crates/cli/src/main.rs~:
 
@@ -54,7 +54,7 @@ In ~crates/cli/src/main.rs~:
 - Extract action-building into a helper to avoid duplication between the
   primary action and extra actions.
 
-* TODO Add integration tests for ~HttpAction~ with a mock TCP and Unix socket server
+* IN-PROGRESS Add integration tests for ~HttpAction~ with a mock TCP and Unix socket server
 
 Add tests that:
 - Spin up a TCP listener, send an HTTP request via ~HttpAction~, and assert
