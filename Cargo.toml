@@ -38,6 +38,9 @@ toml = "0.8"
 # Error handling
 thiserror = "2.0"
 
+# Metrics
+prometheus = "0.13"
+
 # Testing
 tempfile = "3"
 

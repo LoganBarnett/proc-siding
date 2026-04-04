@@ -23,8 +23,10 @@ use proc_siding_lib::{
   discovery::{
     PidDiscovery, ProcessDiscovery, ProcessNameDiscovery, SystemdUnitDiscovery,
   },
+  metrics::Metrics,
   monitor::Monitor,
 };
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -94,11 +96,19 @@ fn run(app: AppConfig) -> Result<(), ApplicationError> {
     vec![action_from_config(app.action)];
   actions.extend(app.extra_actions.into_iter().map(action_from_config));
 
+  let metrics = app.metrics_listen.as_ref().map(|listen| {
+    let m = Arc::new(Metrics::new());
+    proc_siding_lib::metrics_server::spawn(listen, Arc::clone(&m))
+      .expect("Failed to start metrics server");
+    m
+  });
+
   Monitor {
     detector,
     discovery,
     actions,
     config: app.pressure,
+    metrics,
   }
   .run();
 

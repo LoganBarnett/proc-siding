@@ -63,7 +63,7 @@ Add tests that:
   assert the request method and path.
 - Verify error handling for connection refused and malformed URLs.
 
-* TODO Track and expose Prometheus metrics for pressure transitions and action failures
+* IN-PROGRESS Track and expose Prometheus metrics for pressure transitions and action failures
 
 Forward-port the Prometheus exporter pattern from ~rust-template~.  The template
 uses the ~prometheus~ crate (0.13) with ~Registry~, ~IntCounter~, and

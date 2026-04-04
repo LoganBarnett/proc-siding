@@ -82,4 +82,6 @@ pub struct AppConfig {
   pub action: ActionConfig,
   #[serde(default)]
   pub extra_actions: Vec<ActionConfig>,
+  #[serde(default)]
+  pub metrics_listen: Option<String>,
 }

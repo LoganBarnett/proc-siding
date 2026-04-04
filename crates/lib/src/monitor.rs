@@ -7,6 +7,7 @@ use crate::action::PressureAction;
 use crate::config::PressureConfig;
 use crate::detector::{DetectorError, Pid, PressureDetector};
 use crate::discovery::{DiscoveryError, ProcessDiscovery};
+use crate::metrics::SharedMetrics;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MonitorError {
@@ -22,6 +23,7 @@ pub struct Monitor {
   pub discovery: Box<dyn ProcessDiscovery>,
   pub actions: Vec<Box<dyn PressureAction>>,
   pub config: PressureConfig,
+  pub metrics: Option<SharedMetrics>,
 }
 
 impl Monitor {
@@ -61,6 +63,10 @@ impl Monitor {
         }
       };
 
+      if let Some(m) = &self.metrics {
+        m.gpu_pressure.set(pressure);
+      }
+
       debug!(
         pressure,
         paused,
@@ -82,7 +88,13 @@ impl Monitor {
           for action in &self.actions {
             if let Err(e) = action.on_pressure() {
               error!(error = %e, "on_pressure action failed");
+              if let Some(m) = &self.metrics {
+                m.action_errors.inc();
+              }
             }
+          }
+          if let Some(m) = &self.metrics {
+            m.pressure_transitions.inc();
           }
           paused = true;
         }
@@ -94,7 +106,13 @@ impl Monitor {
           for action in &self.actions {
             if let Err(e) = action.on_clear() {
               error!(error = %e, "on_clear action failed");
+              if let Some(m) = &self.metrics {
+                m.action_errors.inc();
+              }
             }
+          }
+          if let Some(m) = &self.metrics {
+            m.clear_transitions.inc();
           }
           paused = false;
         }
