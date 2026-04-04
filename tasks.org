@@ -4,6 +4,28 @@
 
 * TODO Add Http action variant with method support and Unix socket transport
 
+Motivation: sonify-health runs a daemon on each host with a Unix socket API.
+On titanium, proc-siding should mute sonify-health when GPU pressure is detected
+(non-inference GPU usage) and unmute when pressure clears.  The API endpoints:
+
+- Mute:   ~PUT /mute~   on ~unix:/run/sonify-health/sonify-health.sock~
+- Unmute: ~DELETE /mute~ on ~unix:/run/sonify-health/sonify-health.sock~
+
+Once implemented, the dotfiles config (~nixos-configs/proc-siding-worker.nix~)
+will add:
+
+#+begin_src nix
+services.proc-siding.settings.extra_actions = [
+  {
+    kind = "http";
+    pressure_url = "unix:/run/sonify-health/sonify-health.sock:/mute";
+    pressure_method = "PUT";
+    clear_url = "unix:/run/sonify-health/sonify-health.sock:/mute";
+    clear_method = "DELETE";
+  }
+];
+#+end_src
+
 ** config.rs
 
 Add an ~Http~ variant to ~ActionConfig~ with ~pressure_method~ / ~clear_method~
