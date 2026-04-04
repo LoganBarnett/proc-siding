@@ -2,54 +2,154 @@
 #+author:    Logan Barnett
 #+date:      <2026-04-03 Thu>
 
-* TODO Add Http action variant with method support and Unix socket transport
+* IN-PROGRESS Add ~Http~ variant to ~ActionConfig~ with method and Unix socket URL fields
 
-Motivation: sonify-health runs a daemon on each host with a Unix socket API.
-On titanium, proc-siding should mute sonify-health when GPU pressure is detected
-(non-inference GPU usage) and unmute when pressure clears.  The API endpoints:
+In ~crates/lib/src/config.rs~, add a new ~Http~ variant to ~ActionConfig~:
 
-- Mute:   ~PUT /mute~   on ~unix:/run/sonify-health/sonify-health.sock~
-- Unmute: ~DELETE /mute~ on ~unix:/run/sonify-health/sonify-health.sock~
-
-Once implemented, the dotfiles config (~nixos-configs/proc-siding-worker.nix~)
-will add:
-
-#+begin_src nix
-services.proc-siding.settings.extra_actions = [
-  {
-    kind = "http";
-    pressure_url = "unix:/run/sonify-health/sonify-health.sock:/mute";
-    pressure_method = "PUT";
-    clear_url = "unix:/run/sonify-health/sonify-health.sock:/mute";
-    clear_method = "DELETE";
-  }
-];
+#+begin_src rustic :results none :exports code
+Http {
+    pressure_url: String,
+    pressure_method: Option<String>,  // defaults to POST
+    clear_url: String,
+    clear_method: Option<String>,     // defaults to POST
+}
 #+end_src
 
-** config.rs
+URLs use the scheme ~unix:/path/to/sock:/url-path~ for Unix sockets and
+~http://host:port/path~ for TCP.
 
-Add an ~Http~ variant to ~ActionConfig~ with ~pressure_method~ / ~clear_method~
-fields (defaulting to ~POST~).  Add ~extra_actions: Vec<ActionConfig>~ (default
-empty) to ~AppConfig~ so hosts can layer additional side-effect actions alongside
-the primary one.
+Also add ~extra_actions: Vec<ActionConfig>~ (default empty) to ~AppConfig~ so
+hosts can layer additional side-effect actions alongside the primary one.
 
-** action.rs
+* TODO Generalize HTTP action to support configurable methods and Unix sockets
 
-Generalize ~http_post~ into ~http_request(method, url)~.  Add an ~HttpAction~
-struct implementing ~PressureAction~.  Support both TCP URLs
-(~http://host:port/path~) and Unix socket paths
-(~unix:/path/to/sock:/url-path~).  Update ~ActionError~ variants accordingly.
+In ~crates/lib/src/action.rs~:
 
-** monitor.rs
+- Rename ~HttpPostAction~ to ~HttpAction~ and add ~pressure_method~ /
+  ~clear_method~ fields.
+- Generalize ~http_post~ into ~http_request(method, url)~ that writes the
+  given method verb instead of hard-coded ~POST~.
+- Add a URL parser that distinguishes ~unix:/sock/path:/url-path~ from
+  ~http://host:port/path~.
+- For Unix socket URLs, connect via ~std::os::unix::net::UnixStream~ and
+  send the HTTP request over it.
+- Update ~ActionError~ variants: rename ~HttpPost~ to ~HttpRequest~ (or
+  similar) to reflect the broader scope.
 
-Change ~action: Box<dyn PressureAction>~ to ~actions: Vec<Box<dyn
-PressureAction>>~.  Call all actions on pressure/clear transitions.
+* TODO Change ~Monitor~ from a single action to a ~Vec~ of actions
 
-** main.rs
+In ~crates/lib/src/monitor.rs~, change the ~action~ field from
+~Box<dyn PressureAction>~ to ~actions: Vec<Box<dyn PressureAction>>~.
 
-Wire ~ActionConfig::Http~ to ~HttpAction~.  Build ~extra_actions~ from config and
-append to the actions list.
+On pressure/clear transitions, iterate all actions.  Log errors from
+individual actions but continue calling the rest.
 
-** Nix module
+* TODO Wire ~Http~ config variant and ~extra_actions~ in ~main.rs~
 
-No changes needed --- ~settings~ is free-form TOML passthrough.
+In ~crates/cli/src/main.rs~:
+
+- Add a match arm for ~ActionConfig::Http~ that constructs an ~HttpAction~.
+- Build additional actions from ~config.extra_actions~ and append them to
+  the actions ~Vec~ passed to ~Monitor~.
+- Extract action-building into a helper to avoid duplication between the
+  primary action and extra actions.
+
+* TODO Add integration tests for ~HttpAction~ with a mock TCP and Unix socket server
+
+Add tests that:
+- Spin up a TCP listener, send an HTTP request via ~HttpAction~, and assert
+  the request method and path.
+- Spin up a Unix socket listener, send an HTTP request via ~HttpAction~, and
+  assert the request method and path.
+- Verify error handling for connection refused and malformed URLs.
+
+* TODO Track and expose Prometheus metrics for pressure transitions and action failures
+
+Forward-port the Prometheus exporter pattern from ~rust-template~.  The template
+uses the ~prometheus~ crate (0.13) with ~Registry~, ~IntCounter~, and
+~TextEncoder~.
+
+proc-siding is not a web server, so expose metrics via a minimal HTTP listener
+on a configurable address (e.g. ~metrics_listen = "127.0.0.1:9191"~; disabled
+when absent).
+
+Metrics to expose:
+
+- ~proc_siding_pressure_transitions_total~ (counter) — times pressure was
+  detected and actions fired.
+- ~proc_siding_clear_transitions_total~ (counter) — times pressure cleared and
+  actions fired.
+- ~proc_siding_action_errors_total~ (counter, label: ~action~) — action
+  failures, labeled by action description.
+- ~proc_siding_gpu_pressure_ratio~ (gauge) — most recent sampled pressure
+  value.
+
+Implementation steps:
+
+1. Add ~prometheus = "0.13"~ to workspace dependencies.
+2. Add a ~metrics.rs~ in ~crates/lib/src/~ defining a ~Metrics~ struct holding
+   the registry and counters/gauges, with a constructor that registers them.
+3. Thread ~Metrics~ into ~Monitor~ and bump counters on transitions and action
+   errors.
+4. Add a ~metrics_server.rs~ in ~crates/lib/src/~ that binds a TCP listener and
+   serves ~/metrics~ using ~TextEncoder~.  Keep it simple — raw
+   ~std::net::TcpListener~ in a spawned thread is fine; no need for axum.
+5. Add ~metrics_listen: Option<String>~ to ~AppConfig~.  When set, spawn the
+   metrics server thread in ~main.rs~.
+6. Add integration tests: start the metrics server, trigger transitions via a
+   mock monitor, scrape ~/metrics~, and assert counter values.
+
+* TODO Sync with ~rust-template~ and lay down ~rust-template.json~
+
+proc-siding was created before ~rust-template~ stabilized.  Audit the template
+(~~/dev/rust-template~) and forward-port missing infrastructure.  Track sync
+status with a ~rust-template.json~ in the project root.
+
+** ~rust-template.json~
+
+Create ~rust-template.json~ recording which template features have been adopted
+and at what template commit:
+
+#+begin_src json :exports code
+{
+  "templateRepo": "~/dev/rust-template",
+  "lastSyncCommit": "<commit-hash>",
+  "features": {
+    "prometheus": { "status": "pending" },
+    "systemdNotify": { "status": "pending" },
+    "systemdWatchdog": { "status": "pending" },
+    "unixSocketListener": { "status": "not-applicable" },
+    "logging": { "status": "adopted" },
+    "semanticErrors": { "status": "adopted" },
+    "devProfile": { "status": "pending" },
+    "preCommitHook": { "status": "pending" }
+  }
+}
+#+end_src
+
+~not-applicable~ for features proc-siding will never need (e.g. axum/web
+serving, OIDC, Elm frontend).  ~adopted~ for features already present.
+~pending~ for features to forward-port.
+
+** Features to forward-port
+
+- *systemd notify*: proc-siding has ~sd-notify~ in deps but should confirm
+  ~notify_ready()~ is called after the monitor loop starts.  Add watchdog
+  heartbeat (~spawn_watchdog~ pattern from template's ~systemd.rs~).
+- *Prometheus exporter*: covered by the dedicated task above.
+- *Dev profile optimizations*: template sets ~debug = false~,
+  ~incremental = false~, and ~opt-level = 3~ for deps — adopt these in
+  ~Cargo.toml~.
+- *Unix socket listener*: not applicable — proc-siding is not a server (the
+  metrics listener, if added, uses a plain TCP socket).
+
+* TODO Audit pre-commit hook and ~rustfmt~ setup
+
+The pre-commit hook may be missing or disabled.  Investigate:
+
+- Is ~.cargo-husky/hooks/pre-commit~ present and executable?
+- Does the hook invoke ~rustfmt~?
+- Is ~rustfmt~ available in the Nix dev shell?
+- If broken, fix the hook and ensure ~nix develop --command cargo fmt~ works.
+
+Mark ~preCommitHook~ in ~rust-template.json~ accordingly once resolved.
