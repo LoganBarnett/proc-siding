@@ -8,7 +8,7 @@ pub struct Metrics {
   pub pressure_transitions: IntCounter,
   pub clear_transitions: IntCounter,
   pub action_errors: IntCounter,
-  pub gpu_pressure: Gauge,
+  pub pressure_sample: Gauge,
 }
 
 impl Metrics {
@@ -33,11 +33,11 @@ impl Metrics {
     )
     .expect("Failed to create action_errors counter");
 
-    let gpu_pressure = Gauge::new(
-      "proc_siding_gpu_pressure_ratio",
-      "Most recent sampled GPU pressure value",
+    let pressure_sample = Gauge::new(
+      "proc_siding_pressure_sample",
+      "Most recent sampled pressure value from the detector",
     )
-    .expect("Failed to create gpu_pressure gauge");
+    .expect("Failed to create pressure_sample gauge");
 
     registry
       .register(Box::new(pressure_transitions.clone()))
@@ -49,15 +49,15 @@ impl Metrics {
       .register(Box::new(action_errors.clone()))
       .expect("Failed to register action_errors");
     registry
-      .register(Box::new(gpu_pressure.clone()))
-      .expect("Failed to register gpu_pressure");
+      .register(Box::new(pressure_sample.clone()))
+      .expect("Failed to register pressure_sample");
 
     Self {
       registry,
       pressure_transitions,
       clear_transitions,
       action_errors,
-      gpu_pressure,
+      pressure_sample,
     }
   }
 

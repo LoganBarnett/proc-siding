@@ -28,7 +28,7 @@ pub enum ConfigError {
 #[derive(Debug, Parser)]
 #[command(
   name = "proc-siding",
-  about = "GPU pressure monitor for garage-queue workers"
+  about = "Pressure monitor for safe-idle-worker governance"
 )]
 pub struct CliRaw {
   /// Log level (trace, debug, info, warn, error).

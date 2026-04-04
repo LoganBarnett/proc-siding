@@ -1,4 +1,4 @@
-//! proc-siding — GPU pressure monitor for garage-queue workers.
+//! proc-siding — pressure monitor for safe-idle-worker governance.
 //!
 //! Reads a TOML config file, constructs the detector/discovery/action triple,
 //! and runs the hysteresis state machine in a blocking loop.  All business

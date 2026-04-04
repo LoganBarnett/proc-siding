@@ -63,7 +63,7 @@ Add tests that:
   assert the request method and path.
 - Verify error handling for connection refused and malformed URLs.
 
-* IN-PROGRESS Track and expose Prometheus metrics for pressure transitions and action failures
+* DONE Track and expose Prometheus metrics for pressure transitions and action failures
 
 Forward-port the Prometheus exporter pattern from ~rust-template~.  The template
 uses the ~prometheus~ crate (0.13) with ~Registry~, ~IntCounter~, and
@@ -81,8 +81,8 @@ Metrics to expose:
   actions fired.
 - ~proc_siding_action_errors_total~ (counter, label: ~action~) — action
   failures, labeled by action description.
-- ~proc_siding_gpu_pressure_ratio~ (gauge) — most recent sampled pressure
-  value.
+- ~proc_siding_pressure_sample~ (gauge) — most recent sampled pressure value
+  from the detector.
 
 Implementation steps:
 

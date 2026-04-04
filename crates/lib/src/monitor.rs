@@ -64,7 +64,7 @@ impl Monitor {
       };
 
       if let Some(m) = &self.metrics {
-        m.gpu_pressure.set(pressure);
+        m.pressure_sample.set(pressure);
       }
 
       debug!(
@@ -83,7 +83,7 @@ impl Monitor {
           info!(
             pressure,
             contributors = contributors.join(", "),
-            "GPU pressure sustained; pausing worker"
+            "Pressure sustained; triggering actions"
           );
           for action in &self.actions {
             if let Err(e) = action.on_pressure() {
@@ -102,7 +102,7 @@ impl Monitor {
         below += 1;
         above = 0;
         if below >= self.config.hysteresis && paused {
-          info!(pressure, "GPU pressure cleared; resuming worker");
+          info!(pressure, "Pressure cleared; triggering actions");
           for action in &self.actions {
             if let Err(e) = action.on_clear() {
               error!(error = %e, "on_clear action failed");

@@ -56,7 +56,7 @@ fn metrics_server_serves_prometheus_format() {
   metrics.pressure_transitions.inc();
   metrics.clear_transitions.inc();
   metrics.action_errors.inc();
-  metrics.gpu_pressure.set(42.5);
+  metrics.pressure_sample.set(42.5);
 
   let encoded = metrics.encode();
   assert!(
@@ -72,8 +72,8 @@ fn metrics_server_serves_prometheus_format() {
     "Expected action_errors=1, got:\n{encoded}"
   );
   assert!(
-    encoded.contains("proc_siding_gpu_pressure_ratio 42.5"),
-    "Expected gpu_pressure=42.5, got:\n{encoded}"
+    encoded.contains("proc_siding_pressure_sample 42.5"),
+    "Expected pressure_sample=42.5, got:\n{encoded}"
   );
 }
 
