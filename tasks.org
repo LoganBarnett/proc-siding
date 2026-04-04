@@ -1,0 +1,33 @@
+#+title:     proc-siding Tasks
+#+author:    Logan Barnett
+#+date:      <2026-04-03 Thu>
+
+* TODO Add Http action variant with method support and Unix socket transport
+
+** config.rs
+
+Add an ~Http~ variant to ~ActionConfig~ with ~pressure_method~ / ~clear_method~
+fields (defaulting to ~POST~).  Add ~extra_actions: Vec<ActionConfig>~ (default
+empty) to ~AppConfig~ so hosts can layer additional side-effect actions alongside
+the primary one.
+
+** action.rs
+
+Generalize ~http_post~ into ~http_request(method, url)~.  Add an ~HttpAction~
+struct implementing ~PressureAction~.  Support both TCP URLs
+(~http://host:port/path~) and Unix socket paths
+(~unix:/path/to/sock:/url-path~).  Update ~ActionError~ variants accordingly.
+
+** monitor.rs
+
+Change ~action: Box<dyn PressureAction>~ to ~actions: Vec<Box<dyn
+PressureAction>>~.  Call all actions on pressure/clear transitions.
+
+** main.rs
+
+Wire ~ActionConfig::Http~ to ~HttpAction~.  Build ~extra_actions~ from config and
+append to the actions list.
+
+** Nix module
+
+No changes needed --- ~settings~ is free-form TOML passthrough.
