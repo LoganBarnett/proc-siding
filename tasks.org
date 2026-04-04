@@ -36,7 +36,7 @@ In ~crates/lib/src/action.rs~:
 - Update ~ActionError~ variants: rename ~HttpPost~ to ~HttpRequest~ (or
   similar) to reflect the broader scope.
 
-* IN-PROGRESS Change ~Monitor~ from a single action to a ~Vec~ of actions
+* DONE Change ~Monitor~ from a single action to a ~Vec~ of actions
 
 In ~crates/lib/src/monitor.rs~, change the ~action~ field from
 ~Box<dyn PressureAction>~ to ~actions: Vec<Box<dyn PressureAction>>~.
@@ -44,7 +44,7 @@ In ~crates/lib/src/monitor.rs~, change the ~action~ field from
 On pressure/clear transitions, iterate all actions.  Log errors from
 individual actions but continue calling the rest.
 
-* TODO Wire ~Http~ config variant and ~extra_actions~ in ~main.rs~
+* IN-PROGRESS Wire ~Http~ config variant and ~extra_actions~ in ~main.rs~
 
 In ~crates/cli/src/main.rs~:
 

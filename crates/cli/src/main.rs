@@ -15,7 +15,7 @@ use clap::Parser;
 use config::{CliRaw, Config, ConfigError};
 use logging::init_logging;
 use proc_siding_lib::{
-  action::{ExecAction, HttpPostAction, PressureAction},
+  action::{ExecAction, HttpAction, HttpPostAction, PressureAction},
   config::{ActionConfig, AppConfig, DetectorConfig, ProcessDiscoveryConfig},
   detector::{
     AmdGpuDetector, MetalGpuDetector, NvidiaGpuDetector, PressureDetector,
@@ -43,6 +43,36 @@ fn main() -> Result<(), ApplicationError> {
   run(config.app)
 }
 
+fn action_from_config(config: ActionConfig) -> Box<dyn PressureAction> {
+  match config {
+    ActionConfig::HttpPost {
+      pressure_url,
+      clear_url,
+    } => Box::new(HttpPostAction {
+      pressure_url,
+      clear_url,
+    }),
+    ActionConfig::Http {
+      pressure_url,
+      pressure_method,
+      clear_url,
+      clear_method,
+    } => Box::new(HttpAction {
+      pressure_url,
+      pressure_method,
+      clear_url,
+      clear_method,
+    }),
+    ActionConfig::Exec {
+      pressure_cmd,
+      clear_cmd,
+    } => Box::new(ExecAction {
+      pressure_cmd,
+      clear_cmd,
+    }),
+  }
+}
+
 fn run(app: AppConfig) -> Result<(), ApplicationError> {
   let detector: Box<dyn PressureDetector> = match app.detector {
     DetectorConfig::Amd => Box::new(AmdGpuDetector::default()),
@@ -60,27 +90,14 @@ fn run(app: AppConfig) -> Result<(), ApplicationError> {
     }
   };
 
-  let action: Box<dyn PressureAction> = match app.action {
-    ActionConfig::HttpPost {
-      pressure_url,
-      clear_url,
-    } => Box::new(HttpPostAction {
-      pressure_url,
-      clear_url,
-    }),
-    ActionConfig::Exec {
-      pressure_cmd,
-      clear_cmd,
-    } => Box::new(ExecAction {
-      pressure_cmd,
-      clear_cmd,
-    }),
-  };
+  let mut actions: Vec<Box<dyn PressureAction>> =
+    vec![action_from_config(app.action)];
+  actions.extend(app.extra_actions.into_iter().map(action_from_config));
 
   Monitor {
     detector,
     discovery,
-    action,
+    actions,
     config: app.pressure,
   }
   .run();
