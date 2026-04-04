@@ -54,7 +54,7 @@ In ~crates/cli/src/main.rs~:
 - Extract action-building into a helper to avoid duplication between the
   primary action and extra actions.
 
-* IN-PROGRESS Add integration tests for ~HttpAction~ with a mock TCP and Unix socket server
+* DONE Add integration tests for ~HttpAction~ with a mock TCP and Unix socket server
 
 Add tests that:
 - Spin up a TCP listener, send an HTTP request via ~HttpAction~, and assert
