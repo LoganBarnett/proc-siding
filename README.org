@@ -30,8 +30,8 @@ resuming.
 
 ** From source
 
-Requires a Rust toolchain (stable, 1.78+) and, for GPU detectors, the
-platform tools described under [[Detectors]].
+Requires a Rust toolchain (stable, 1.78+).  Individual detectors may need
+platform tools at runtime; see [[Detectors]].
 
 #+begin_src sh
 git clone <repo-url> proc-siding
