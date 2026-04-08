@@ -1,0 +1,37 @@
+#+title:     Example Detectors
+#+language:  en
+
+These scripts are example resource pollers for proc-siding's ~detector_cmd~.
+Each one outputs tab-separated ~<value>\t<entity>~ lines on stdout and can be
+used directly in your configuration:
+
+#+begin_src toml :exports code
+detector_cmd = "examples/detectors/amd-gpu.sh --exclude-unit ollama.service"
+#+end_src
+
+| Script            | Platform | Mechanism                                           | Privilege     |
+|-------------------+----------+-----------------------------------------------------+---------------|
+| ~amd-gpu.sh~      | Linux    | sysfs ~gpu_busy_percent~ + ~/proc/<pid>/fd~ scan    | root required |
+| ~nvidia-gpu.sh~   | Linux    | ~nvidia-smi~ + ~/proc/<pid>/fd~ scan                | root required |
+| ~metal-gpu.sh~    | macOS    | ~metalps --json~ with ~jq~                          | user level    |
+
+* Writing your own detector
+
+A detector is any executable that writes TSV rows to stdout.  Each row carries
+a numeric pressure value and a human-readable entity label:
+
+#+begin_example
+42.5	firefox
+15.0	blender
+#+end_example
+
+proc-siding sums the values to produce an aggregate pressure reading and uses
+the entity names for log output only.  Exit code 0 signals a successful sample;
+any non-zero exit causes the tick to be skipped.
+
+* Intel Arc
+
+We have no Intel Arc hardware to test on.  ~intel_gpu_top -J~ (from
+~intel-gpu-tools~) provides per-engine utilization on the ~i915~ / ~xe~ driver.
+A wrapper script following the same TSV contract would integrate with
+proc-siding unchanged.  Contributions welcome.
