@@ -1,26 +1,79 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use tracing::{debug, error, info, warn};
 
 use crate::action::PressureAction;
 use crate::config::PressureConfig;
-use crate::detector::{DetectorError, Pid, PressureDetector};
-use crate::discovery::{DiscoveryError, ProcessDiscovery};
 use crate::metrics::SharedMetrics;
 
 #[derive(Debug, thiserror::Error)]
-pub enum MonitorError {
-  #[error("Discovery failed: {0}")]
-  Discovery(#[from] DiscoveryError),
+pub enum SampleError {
+  #[error("Detector command failed: {0}")]
+  CommandFailed(String),
 
-  #[error("Detector failed: {0}")]
-  Detector(#[from] DetectorError),
+  #[error("Failed to parse detector output line {line:?}: {detail}")]
+  ParseFailed { line: String, detail: String },
+}
+
+/// A single pressure sample parsed from the detector command's output.
+struct Sample {
+  pressure: f64,
+  contributors: Vec<String>,
+}
+
+/// Runs the detector command and parses its TSV output into a pressure
+/// reading and contributor list.
+fn run_detector(cmd: &str) -> Result<Sample, SampleError> {
+  let output = std::process::Command::new("sh")
+    .args(["-c", cmd])
+    .output()
+    .map_err(|e| SampleError::CommandFailed(format!("failed to spawn: {e}")))?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    return Err(SampleError::CommandFailed(format!(
+      "exited {}: {}",
+      output.status,
+      stderr.trim()
+    )));
+  }
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let mut pressure = 0.0;
+  let mut contributors = Vec::new();
+
+  for line in stdout.lines() {
+    let line = line.trim();
+    if line.is_empty() {
+      continue;
+    }
+    let (value_str, entity) =
+      line
+        .split_once('\t')
+        .ok_or_else(|| SampleError::ParseFailed {
+          line: line.to_string(),
+          detail: "expected tab-separated <value>\\t<entity>".to_string(),
+        })?;
+    let value: f64 =
+      value_str
+        .trim()
+        .parse()
+        .map_err(|_| SampleError::ParseFailed {
+          line: line.to_string(),
+          detail: format!("{value_str:?} is not a valid number"),
+        })?;
+    pressure += value;
+    contributors.push(entity.trim().to_string());
+  }
+
+  Ok(Sample {
+    pressure,
+    contributors,
+  })
 }
 
 pub struct Monitor {
-  pub detector: Box<dyn PressureDetector>,
-  pub discovery: Box<dyn ProcessDiscovery>,
+  pub detector_cmd: String,
   pub actions: Vec<Box<dyn PressureAction>>,
   pub config: PressureConfig,
   pub metrics: Option<SharedMetrics>,
@@ -42,20 +95,16 @@ impl Monitor {
       threshold = self.config.threshold,
       hysteresis = self.config.hysteresis,
       poll_interval_ms = self.config.poll_interval_ms,
+      detector_cmd = %self.detector_cmd,
       "Starting pressure monitor"
     );
 
     loop {
-      let owned_pids: HashSet<Pid> = match self.discovery.pids() {
-        Ok(pids) => pids,
-        Err(e) => {
-          warn!(error = %e, "PID discovery failed; using empty exclusion set");
-          HashSet::new()
-        }
-      };
-
-      let (pressure, contributors) = match self.detector.sample(&owned_pids) {
-        Ok(p) => p,
+      let Sample {
+        pressure,
+        contributors,
+      } = match run_detector(&self.detector_cmd) {
+        Ok(s) => s,
         Err(e) => {
           warn!(error = %e, "Detector sample failed; skipping tick");
           std::thread::sleep(interval);

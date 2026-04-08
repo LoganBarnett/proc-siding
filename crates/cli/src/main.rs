@@ -1,8 +1,8 @@
 //! proc-siding — pressure monitor for safe-idle-worker governance.
 //!
-//! Reads a TOML config file, constructs the detector/discovery/action triple,
-//! and runs the hysteresis state machine in a blocking loop.  All business
-//! logic lives in proc-siding-lib; this file only wires components together.
+//! Reads a TOML config file, constructs the action list, and runs the
+//! hysteresis state machine in a blocking loop.  All business logic lives
+//! in proc-siding-lib; this file only wires components together.
 //!
 //! # LLM Development Guidelines
 //! - Keep wiring logic here; keep business logic in proc-siding-lib.
@@ -16,13 +16,7 @@ use config::{CliRaw, Config, ConfigError};
 use logging::init_logging;
 use proc_siding_lib::{
   action::{ExecAction, HttpAction, HttpPostAction, PressureAction},
-  config::{ActionConfig, AppConfig, DetectorConfig, ProcessDiscoveryConfig},
-  detector::{
-    AmdGpuDetector, MetalGpuDetector, NvidiaGpuDetector, PressureDetector,
-  },
-  discovery::{
-    PidDiscovery, ProcessDiscovery, ProcessNameDiscovery, SystemdUnitDiscovery,
-  },
+  config::{ActionConfig, AppConfig},
   metrics::Metrics,
   monitor::Monitor,
 };
@@ -76,22 +70,6 @@ fn action_from_config(config: ActionConfig) -> Box<dyn PressureAction> {
 }
 
 fn run(app: AppConfig) -> Result<(), ApplicationError> {
-  let detector: Box<dyn PressureDetector> = match app.detector {
-    DetectorConfig::Amd => Box::new(AmdGpuDetector::default()),
-    DetectorConfig::Nvidia => Box::new(NvidiaGpuDetector::default()),
-    DetectorConfig::Metal => Box::new(MetalGpuDetector::default()),
-  };
-
-  let discovery: Box<dyn ProcessDiscovery> = match app.process_discovery {
-    ProcessDiscoveryConfig::SystemdUnit { unit } => {
-      Box::new(SystemdUnitDiscovery { unit })
-    }
-    ProcessDiscoveryConfig::Pid { pid } => Box::new(PidDiscovery { pid }),
-    ProcessDiscoveryConfig::ProcessName { pattern } => {
-      Box::new(ProcessNameDiscovery { pattern })
-    }
-  };
-
   let mut actions: Vec<Box<dyn PressureAction>> =
     vec![action_from_config(app.action)];
   actions.extend(app.extra_actions.into_iter().map(action_from_config));
@@ -104,8 +82,7 @@ fn run(app: AppConfig) -> Result<(), ApplicationError> {
   });
 
   Monitor {
-    detector,
-    discovery,
+    detector_cmd: app.detector_cmd,
     actions,
     config: app.pressure,
     metrics,

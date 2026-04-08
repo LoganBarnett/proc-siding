@@ -99,7 +99,7 @@ Implementation steps:
 6. Add integration tests: start the metrics server, trigger transitions via a
    mock monitor, scrape ~/metrics~, and assert counter values.
 
-* TODO Replace built-in detectors with exec-based polling
+* IN-PROGRESS Replace built-in detectors with exec-based polling
 
 proc-siding is not a detection mechanism — it is a trigger that acts when
 pressure is detected.  Detection is an external concern.  The library currently

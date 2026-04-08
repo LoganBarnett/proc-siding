@@ -34,22 +34,6 @@ impl Default for PressureConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DetectorConfig {
-  Amd,
-  Nvidia,
-  Metal,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ProcessDiscoveryConfig {
-  SystemdUnit { unit: String },
-  Pid { pid: u32 },
-  ProcessName { pattern: String },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActionConfig {
   HttpPost {
     pressure_url: String,
@@ -77,8 +61,9 @@ fn default_http_method() -> String {
 pub struct AppConfig {
   #[serde(default)]
   pub pressure: PressureConfig,
-  pub detector: DetectorConfig,
-  pub process_discovery: ProcessDiscoveryConfig,
+  /// Command to run as the resource poller.  Must output TSV lines of
+  /// `<value>\t<entity>` on stdout.
+  pub detector_cmd: String,
   pub action: ActionConfig,
   #[serde(default)]
   pub extra_actions: Vec<ActionConfig>,
