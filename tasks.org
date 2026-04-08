@@ -99,6 +99,140 @@ Implementation steps:
 6. Add integration tests: start the metrics server, trigger transitions via a
    mock monitor, scrape ~/metrics~, and assert counter values.
 
+* TODO Make the library resource-agnostic by extracting GPU detectors
+
+~crates/lib~ currently embeds three GPU-specific detector implementations and a
+~DetectorConfig~ enum that names GPU vendors (~Amd~, ~Nvidia~, ~Metal~).  This
+couples the library to a specific resource type.  The ~PressureDetector~ trait
+itself is already resource-agnostic — only the config and implementations are
+not.
+
+** Goal
+
+The library (~crates/lib~) should have no knowledge of GPUs.  GPU detection
+becomes one possible set of detectors provided alongside the library, not baked
+into it.
+
+** Approach: new ~crates/gpu-detectors~ crate
+
+Create a new workspace member ~crates/gpu-detectors~ that holds the three
+existing GPU detector structs (~AmdGpuDetector~, ~NvidiaGpuDetector~,
+~MetalGpuDetector~), the Linux helpers (~pid_has_device_fd~,
+~all_device_users~, ~filter_contributors~), the ~metalps~ serde types, and all
+GPU-specific ~DetectorError~ variants.
+
+This crate depends on ~proc-siding-lib~ for the ~PressureDetector~ trait and
+~Pid~ type.  The CLI crate depends on both ~proc-siding-lib~ and
+~proc-siding-gpu-detectors~.
+
+*** ~crates/lib~ changes
+
+- ~detector.rs~ retains only:
+  - ~Pid~ type alias.
+  - ~PressureDetector~ trait.
+  - A generic ~DetectorError~ enum with resource-agnostic variants (e.g.
+    ~SubprocessFailed~, ~OutputParseFailed~, ~SysfsRead~).
+  - The ~filter_contributors~ tests (they test a general pattern; the function
+    itself moves but the tests can exercise it through the gpu-detectors crate,
+    or the function can stay in lib as a public utility since baseline/excluded
+    filtering is resource-agnostic).
+- ~config.rs~: remove ~DetectorConfig~ entirely.  Detection config moves to the
+  CLI layer since it is the wiring layer.
+- ~lib.rs~: re-export trait and types only.
+
+*** ~crates/gpu-detectors~ changes
+
+- New crate: ~proc-siding-gpu-detectors~.
+- Contains ~amd.rs~, ~nvidia.rs~, ~metal.rs~ with the current detector
+  implementations (moved from ~detector.rs~).
+- Contains ~helpers.rs~ with ~pid_has_device_fd~, ~all_device_users~,
+  ~filter_contributors~ (Linux helpers).
+- Owns a ~GpuDetectorConfig~ enum:
+
+#+begin_src rustic :results none :exports code
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GpuDetectorConfig {
+    Amd,
+    Nvidia,
+    Metal,
+}
+#+end_src
+
+- Provides a factory function to construct the detector:
+
+#+begin_src rustic :results none :exports code
+pub fn detector_from_config(
+    config: GpuDetectorConfig,
+) -> Box<dyn PressureDetector> { ... }
+#+end_src
+
+*** ~crates/cli~ changes
+
+- ~DetectorConfig~ in CLI config becomes a unified enum that pulls in GPU
+  variants via ~serde(untagged)~ or flattening:
+
+#+begin_src rustic :results none :exports code
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DetectorConfig {
+    Amd,
+    Nvidia,
+    Metal,
+    // Future: Exec { cmd: String, format: OutputFormat },
+}
+#+end_src
+
+  The match in ~main.rs~ delegates GPU variants to
+  ~proc_siding_gpu_detectors::detector_from_config~.
+
+- This keeps existing TOML configs working with zero changes.
+
+*** Future: ~Exec~ detector
+
+A follow-up task can add an ~Exec~ variant to ~DetectorConfig~ that runs a
+user-supplied command and parses a pressure value from stdout.  This would make
+proc-siding fully pluggable at the config level without writing Rust.  Not in
+scope for this task but the architecture should not preclude it.
+
+** Intel Arc
+
+The Intel Arc discrete GPU uses the ~i915~ (or ~xe~) kernel driver on Linux.
+Utilization can be read from:
+
+- ~intel_gpu_top -J~ (from ~intel-gpu-tools~) — JSON output with per-engine
+  utilization.
+- ~/sys/class/drm/card*/gt/gt*/rc6_residency~ — inverse of busy (residency in
+  idle state); would need the complement.
+
+We have no Intel Arc hardware to test on.  Add a note in the GPU detectors
+documentation indicating that an Intel Arc detector is welcome but untested.
+The ~Exec~ detector (once implemented) would let Intel Arc users bridge the gap
+immediately by wrapping ~intel_gpu_top~.
+
+** Documentation
+
+Add a ~DETECTORS.org~ (or a section in the README) documenting:
+
+- How to use each built-in GPU detector (AMD, NVIDIA, Metal) with example TOML
+  config.
+- How the baseline PID filtering works.
+- Platform requirements for each detector (sysfs access, nvidia-smi, metalps).
+- A note about Intel Arc: no built-in support, no test hardware; contributions
+  welcome; ~Exec~ detector is the interim solution.
+
+** Commits
+
+1. Create ~crates/gpu-detectors~ crate with the moved detector implementations
+   and helpers.
+2. Strip GPU-specific code from ~crates/lib/src/detector.rs~, keeping the trait,
+   ~Pid~, and generic error variants.
+3. Remove ~DetectorConfig~ from ~crates/lib/src/config.rs~; move to CLI config.
+4. Update ~crates/cli~ to depend on ~proc-siding-gpu-detectors~ and wire the
+   detector config.
+5. Move ~filter_contributors~ tests to ~crates/gpu-detectors~.
+6. Add documentation with GPU detector examples and Intel Arc note.
+
 * TODO Sync with ~rust-template~ and lay down ~rust-template.json~
 
 proc-siding was created before ~rust-template~ stabilized.  Audit the template
