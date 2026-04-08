@@ -176,34 +176,55 @@ pressure_url = "http://127.0.0.1:9091/control/pause"
 clear_url    = "http://127.0.0.1:9091/control/resume"
 #+end_src
 
-** Example poller scripts
+** Example poller scripts (~examples/detectors/~)
 
-Provide tested example scripts in a ~scripts/~ or ~examples/~ directory.  Each
-script handles its own filtering and child-process logic.
+The existing Rust detector implementations encode real operational knowledge —
+sysfs paths, ~nvidia-smi~ flags, ~metalps~ JSON structure, baseline PID
+filtering, ~/proc/<pid>/fd~ scanning, cgroup PID enumeration, ~pgrep~ child
+walks.  This knowledge should be preserved as substantial, well-commented
+shell scripts in ~examples/detectors/~.  Each script is directly usable as a
+~detector_cmd~ value.
 
-*** AMD GPU (~detect-amd-gpu.sh~)
+*** ~amd-gpu.sh~
 
-Reads ~gpu_busy_percent~ from sysfs.  Scans ~/proc/<pid>/fd~ for ~/dev/dri/~
-to find contributing processes.  Accepts a ~--exclude-unit~ flag to exclude a
-systemd unit's cgroup PIDs.
+- Reads ~gpu_busy_percent~ from ~/sys/class/drm/card*/device/gpu_busy_percent~.
+- Scans ~/proc/<pid>/fd~ symlinks for ~/dev/dri/~ to find processes with DRI
+  device files open.
+- Captures baseline PIDs on first run (processes that had DRI fds open at
+  startup, e.g. compositor) and excludes them on subsequent runs.  Uses a
+  state file (e.g. ~/run/proc-siding/baseline-pids~) to persist across
+  invocations.
+- Accepts ~--exclude-unit <unit>~ to read cgroup PIDs from
+  ~/sys/fs/cgroup/system.slice/<unit>/cgroup.procs~ and exclude them.
+- Only reports pressure when at least one non-excluded, non-baseline process
+  has the device open — suppresses the sysfs utilization figure otherwise.
+- Outputs TSV: one row per contributing process.
+- Requires root or ~CAP_SYS_PTRACE~ for ~/proc/<pid>/fd~ scanning.
 
-*** NVIDIA GPU (~detect-nvidia-gpu.sh~)
+*** ~nvidia-gpu.sh~
 
-Runs ~nvidia-smi --query-gpu=utilization.gpu~.  Scans ~/proc/<pid>/fd~ for
-~/dev/nvidia~ to find contributing processes.  Same ~--exclude-unit~ flag.
+- Queries ~nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits~.
+- Scans ~/proc/<pid>/fd~ for ~/dev/nvidia~ to find contributing processes.
+- Same baseline PID and ~--exclude-unit~ logic as the AMD script.
+- Requires ~nvidia-smi~ on ~PATH~ and root for fd scanning.
 
-*** Metal / macOS GPU (~detect-metal-gpu.sh~)
+*** ~metal-gpu.sh~
 
-Runs ~metalps --json~, parses the JSON, and outputs per-process GPU
-utilization.  Accepts a ~--exclude-pattern~ flag for ~pgrep -f~ based
-exclusion.
+- Runs ~metalps --json --interval-ms <N>~ and parses the JSON output with ~jq~.
+- Sums ~gpu_percent~ across non-excluded processes (capped at 100).
+- Accepts ~--exclude-pattern <pattern>~ for ~pgrep -f~ based exclusion
+  (plus recursive child walk via ~pgrep -P~).
+- No baseline PID logic needed — ~metalps~ reports per-process utilization
+  directly.
+- Requires ~metalps~ and ~jq~ on ~PATH~.  Runs at user level.
 
 *** Intel Arc (note only)
 
-We have no Intel Arc hardware to test on.  Document that ~intel_gpu_top -J~
-(from ~intel-gpu-tools~) can provide per-engine utilization, and that a
-wrapper script following the same TSV contract would work.  Contributions
-welcome.
+We have no Intel Arc hardware to test on.  Include a ~README~ or header
+comment in the examples directory noting that ~intel_gpu_top -J~ (from
+~intel-gpu-tools~) can provide per-engine utilization on the ~i915~ / ~xe~
+driver, and that a wrapper script following the same TSV contract would work.
+Contributions welcome.
 
 ** Testing
 
