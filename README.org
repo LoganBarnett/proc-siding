@@ -8,18 +8,18 @@ governance.  It watches a resource for sustained external pressure and triggers
 configurable actions when that pressure crosses a threshold — then reverses
 those actions once the pressure clears.
 
-The monitor is built around three pluggable concepts — a *detector* that
-measures resource pressure, a *process discovery* mechanism that identifies the
-PIDs of the owned workload (so they are excluded from the pressure measurement),
-and an *action* that is called on state transitions.  All three are selected
-via a TOML config file; no recompilation is needed to switch between resource
-types or action types.
+proc-siding is not a detection mechanism — it is a trigger.  Detection is
+handled by a user-configured command (the *detector*) that runs at a regular
+interval and writes tab-separated pressure readings to stdout.  proc-siding
+sums the values, applies hysteresis, and fires actions on state transitions.
+The detector is responsible for all resource-specific logic, filtering, and
+exclusion.
 
 The motivating use case is GPU arbitration: a garage-queue worker runs large
 language model inference on a shared machine.  When a game or other GPU-heavy
 process launches, proc-siding pauses the worker so the GPU is fully available,
 then resumes it automatically once the external load is gone.  But the core
-mechanism is resource-agnostic — any detector that produces a 0–100 pressure
+mechanism is resource-agnostic — any detector that produces a numeric pressure
 value can drive it.
 
 Hysteresis prevents flapping: N consecutive above-threshold samples are
@@ -30,8 +30,7 @@ resuming.
 
 ** From source
 
-Requires a Rust toolchain (stable, 1.78+).  Individual detectors may need
-platform tools at runtime; see [[Detectors]].
+Requires a Rust toolchain (stable, 1.78+).
 
 #+begin_src sh
 git clone <repo-url> proc-siding
@@ -51,8 +50,7 @@ services.proc-siding = {
   enable = true;
   settings = {
     pressure = { threshold = 25; hysteresis = 3; poll_interval_ms = 2000; };
-    detector.kind = "amd";           # or "nvidia" / "metal"
-    process_discovery = { kind = "systemd_unit"; unit = "ollama.service"; };
+    detector_cmd = "examples/detectors/amd-gpu.sh --exclude-unit ollama.service";
     action = {
       kind = "http_post";
       pressure_url = "http://127.0.0.1:9091/control/pause";
@@ -96,67 +94,98 @@ threshold        = 25     # percent, 0–100; default 25
 hysteresis       = 3      # consecutive samples before state change; default 3
 poll_interval_ms = 2000   # default 2000
 
-[detector]
-kind = "amd"              # "amd" | "nvidia" | "metal"
-
-[process_discovery]
-kind = "systemd_unit"     # "systemd_unit" | "pid" | "process_name"
-unit = "ollama.service"   # for systemd_unit
-# pid     = 1234          # for pid
-# pattern = "ollama"      # for process_name (pgrep -f)
+# Command to run as the resource poller.  Must output TSV lines of
+# <value><TAB><entity> on stdout.  Exit code 0 means a successful sample.
+detector_cmd = "examples/detectors/amd-gpu.sh --exclude-unit ollama.service"
 
 [action]
-kind         = "http_post"                          # "http_post" | "exec"
+kind         = "http_post"                          # "http_post" | "http" | "exec"
 pressure_url = "http://127.0.0.1:9091/control/pause"
 clear_url    = "http://127.0.0.1:9091/control/resume"
 # For exec:
+# kind         = "exec"
 # pressure_cmd = "systemctl stop my-worker"
 # clear_cmd    = "systemctl start my-worker"
 #+end_src
 
+** Actions
+
+| ~kind~       | Description                                     |
+|--------------+-------------------------------------------------|
+| ~http_post~  | Sends HTTP POST to ~pressure_url~ / ~clear_url~ |
+| ~http~       | Configurable HTTP method per transition          |
+| ~exec~       | Runs a shell command per transition              |
+
+The ~http~ action supports configurable methods and Unix socket transport:
+
+#+begin_src toml
+[action]
+kind            = "http"
+pressure_url    = "unix:/run/my-service/control.sock:/mute"
+pressure_method = "PUT"
+clear_url       = "unix:/run/my-service/control.sock:/unmute"
+clear_method    = "DELETE"
+#+end_src
+
+Additional actions can run alongside the primary one:
+
+#+begin_src toml
+[[extra_actions]]
+kind         = "exec"
+pressure_cmd = "notify-send 'GPU pressure detected'"
+clear_cmd    = "notify-send 'GPU pressure cleared'"
+#+end_src
+
 ** Detectors
 
-| ~kind~    | Platform | Mechanism                                                        | Privilege     |
-|-----------+----------+------------------------------------------------------------------+---------------|
-| ~amd~     | Linux    | ~/proc/<pid>/fd~ scan for ~/dev/dri/~; sysfs ~gpu_busy_percent~ | root required |
-| ~nvidia~  | Linux    | ~/proc/<pid>/fd~ scan for ~/dev/nvidia~; ~nvidia-smi~           | root required |
-| ~metal~   | macOS    | ~metalps --json~; sums ~gpu_percent~ of non-owned processes      | user-level    |
+A detector is any executable that writes TSV rows to stdout.  Each row carries
+a numeric pressure value and a human-readable entity label:
 
-The AMD and NVIDIA detectors only report pressure when at least one
-non-excluded process has the GPU device file open.  This means the raw sysfs /
-nvidia-smi utilisation figure is suppressed entirely if the only GPU users are
-the owned workload — preventing false positives from the watched process's own
-activity.
+#+begin_example
+42.5	firefox
+15.0	blender
+#+end_example
 
-The Metal detector requires ~metalps~ on ~PATH~.  The Nix Darwin module wires
-this automatically.
+proc-siding sums the values to produce an aggregate pressure reading and uses
+the entity names for log output only.  Exit code 0 signals a successful sample;
+any non-zero exit causes the tick to be skipped.
 
-** Process discovery
+See ~examples/detectors/~ for ready-to-use GPU detector scripts covering AMD,
+NVIDIA, and Metal.
 
-| ~kind~           | Mechanism                                                            | Best for        |
-|------------------+----------------------------------------------------------------------+-----------------|
-| ~systemd_unit~   | Reads ~/sys/fs/cgroup/…/<unit>.service/cgroup.procs~                 | Linux systemd   |
-| ~process_name~   | ~pgrep -f <pattern>~ + recursive child walk                          | macOS / scripts |
-| ~pid~            | Explicit PID; walks ~/proc/<pid>/task/<pid>/children~ (Linux) or ~pgrep -P~ (macOS) | Testing         |
+** Metrics
 
-~systemd_unit~ is the most reliable on Linux because it captures the entire
-cgroup tree without requiring a name match.
+An optional Prometheus metrics endpoint can be enabled:
+
+#+begin_src toml
+metrics_listen = "127.0.0.1:9191"
+#+end_src
+
+Exposed metrics:
+
+| Metric                                     | Type    | Description                       |
+|--------------------------------------------+---------+-----------------------------------|
+| ~proc_siding_pressure_transitions_total~   | counter | Times pressure triggered actions  |
+| ~proc_siding_clear_transitions_total~      | counter | Times pressure cleared            |
+| ~proc_siding_action_errors_total~          | counter | Action failures                   |
+| ~proc_siding_pressure_sample~              | gauge   | Most recent aggregate pressure    |
 
 * Gotchas and Tradeoffs
 
-- *AMD/NVIDIA require root.*  The detectors read ~/proc/<pid>/fd~ for
-  processes they do not own, which requires ~CAP_SYS_PTRACE~ or running as
-  root.  The systemd service runs as root for this reason.
+- *Detector privilege depends on the script.*  The AMD and NVIDIA example
+  detectors read ~/proc/<pid>/fd~ for processes they do not own, which requires
+  ~CAP_SYS_PTRACE~ or running as root.  The Metal detector runs at user level.
 
 - *GPU utilisation is not attributed per-process on Linux.*  The AMD and
-  NVIDIA detectors report the overall GPU busy percentage (from sysfs or
+  NVIDIA example detectors report the overall GPU busy percentage (from sysfs or
   nvidia-smi) whenever any external process has the device open.  If multiple
   external processes share the GPU, the reported figure is the total — there
-  is no per-process split.
+  is no per-process split.  The detector scripts divide the total evenly across
+  contributors as an approximation.
 
-- *The ~metal~ detector blocks for ~sample_interval_ms~ per poll.*  Each call
-  to ~metalps~ takes one sample interval to complete, so effective poll
-  latency is ~poll_interval_ms + sample_interval_ms~ (default ~2500 ms~).
+- *The Metal detector blocks for ~interval_ms~ per poll.*  Each call to
+  ~metalps~ takes one sample interval to complete, so effective poll latency
+  is ~poll_interval_ms + interval_ms~.
 
 - *Kernel truncates ~/proc/<pid>/comm~ at 15 characters.*  The contributor
   name in log output may be truncated for processes with long names.
@@ -203,11 +232,13 @@ contributor names and hysteresis counter values.
 
 * Contributing
 
-Run the test suite with ~cargo test~.  Format with ~cargo fmt~ and lint with
-~cargo clippy~ before submitting changes.
+Run the test suite with ~cargo test --workspace~.  Format with ~cargo fmt~ and
+lint with ~cargo clippy~ before submitting changes.
 
 The crate structure keeps all business logic in ~crates/lib~ and limits
-~crates/cli~ to wiring.  New detector, discovery, or action implementations
-belong in ~crates/lib/src/detector.rs~, ~discovery.rs~, or ~action.rs~
-respectively, with a corresponding variant added to ~crates/lib/src/config.rs~
-and wired in ~crates/cli/src/main.rs~.
+~crates/cli~ to wiring.  New action implementations belong in
+~crates/lib/src/action.rs~ with a corresponding variant added to
+~crates/lib/src/config.rs~ and wired in ~crates/cli/src/main.rs~.
+
+New detectors are standalone scripts in ~examples/detectors/~.  See
+~examples/detectors/README.org~ for the output contract.
