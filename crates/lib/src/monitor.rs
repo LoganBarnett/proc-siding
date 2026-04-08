@@ -16,14 +16,15 @@ pub enum SampleError {
 }
 
 /// A single pressure sample parsed from the detector command's output.
-struct Sample {
-  pressure: f64,
-  contributors: Vec<String>,
+#[derive(Debug)]
+pub struct Sample {
+  pub pressure: f64,
+  pub contributors: Vec<String>,
 }
 
 /// Runs the detector command and parses its TSV output into a pressure
 /// reading and contributor list.
-fn run_detector(cmd: &str) -> Result<Sample, SampleError> {
+pub fn run_detector(cmd: &str) -> Result<Sample, SampleError> {
   let output = std::process::Command::new("sh")
     .args(["-c", cmd])
     .output()
