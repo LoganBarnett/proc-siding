@@ -99,139 +99,135 @@ Implementation steps:
 6. Add integration tests: start the metrics server, trigger transitions via a
    mock monitor, scrape ~/metrics~, and assert counter values.
 
-* TODO Make the library resource-agnostic by extracting GPU detectors
+* TODO Replace built-in detectors with exec-based polling
 
-~crates/lib~ currently embeds three GPU-specific detector implementations and a
-~DetectorConfig~ enum that names GPU vendors (~Amd~, ~Nvidia~, ~Metal~).  This
-couples the library to a specific resource type.  The ~PressureDetector~ trait
-itself is already resource-agnostic — only the config and implementations are
-not.
+proc-siding is not a detection mechanism — it is a trigger that acts when
+pressure is detected.  Detection is an external concern.  The library currently
+embeds three GPU-specific detector implementations, a ~PressureDetector~ trait,
+a ~ProcessDiscovery~ trait, and config enums that name GPU vendors and discovery
+strategies.  All of this should be replaced with a single, simple model:
+proc-siding runs a user-configured command at a regular interval and parses
+its output.
 
-** Goal
+** Model
 
-The library (~crates/lib~) should have no knowledge of GPUs.  GPU detection
-becomes one possible set of detectors provided alongside the library, not baked
-into it.
+The configured command is a *resource poller*.  It runs, inspects whatever
+resource it cares about, and writes rows to stdout.  Each row is a
+tab-separated pair:
 
-** Approach: new ~crates/gpu-detectors~ crate
+#+begin_example
+<value>\t<entity>
+#+end_example
 
-Create a new workspace member ~crates/gpu-detectors~ that holds the three
-existing GPU detector structs (~AmdGpuDetector~, ~NvidiaGpuDetector~,
-~MetalGpuDetector~), the Linux helpers (~pid_has_device_fd~,
-~all_device_users~, ~filter_contributors~), the ~metalps~ serde types, and all
-GPU-specific ~DetectorError~ variants.
+- ~value~: a numeric pressure reading (e.g. GPU utilization percentage).
+- ~entity~: a human-readable label for the source of the pressure (e.g. a
+  process name).  Used only for logging — proc-siding does not interpret it.
 
-This crate depends on ~proc-siding-lib~ for the ~PressureDetector~ trait and
-~Pid~ type.  The CLI crate depends on both ~proc-siding-lib~ and
-~proc-siding-gpu-detectors~.
+proc-siding:
 
-*** ~crates/lib~ changes
+1. Runs the command every ~poll_interval_ms~ (already in ~PressureConfig~).
+2. Parses stdout into ~(f64, String)~ rows.
+3. Sums the values to produce the aggregate pressure reading.
+4. Collects entity names as the contributor list (for log output).
+5. Applies hysteresis against the threshold.
+6. Fires actions on state transitions.
 
-- ~detector.rs~ retains only:
-  - ~Pid~ type alias.
-  - ~PressureDetector~ trait.
-  - A generic ~DetectorError~ enum with resource-agnostic variants (e.g.
-    ~SubprocessFailed~, ~OutputParseFailed~, ~SysfsRead~).
-  - The ~filter_contributors~ tests (they test a general pattern; the function
-    itself moves but the tests can exercise it through the gpu-detectors crate,
-    or the function can stay in lib as a public utility since baseline/excluded
-    filtering is resource-agnostic).
-- ~config.rs~: remove ~DetectorConfig~ entirely.  Detection config moves to the
-  CLI layer since it is the wiring layer.
-- ~lib.rs~: re-export trait and types only.
+The command is responsible for all filtering, exclusion, child-process
+handling, and resource-specific logic.  proc-siding does not know or care what
+resource is being monitored, what PIDs exist, or how exclusion works.
 
-*** ~crates/gpu-detectors~ changes
+** What gets removed from the library
 
-- New crate: ~proc-siding-gpu-detectors~.
-- Contains ~amd.rs~, ~nvidia.rs~, ~metal.rs~ with the current detector
-  implementations (moved from ~detector.rs~).
-- Contains ~helpers.rs~ with ~pid_has_device_fd~, ~all_device_users~,
-  ~filter_contributors~ (Linux helpers).
-- Owns a ~GpuDetectorConfig~ enum:
+- ~detector.rs~: delete ~AmdGpuDetector~, ~NvidiaGpuDetector~,
+  ~MetalGpuDetector~, all Linux helpers (~pid_has_device_fd~,
+  ~all_device_users~, ~filter_contributors~), ~metalps~ serde types, and the
+  ~PressureDetector~ trait.  The trait is no longer needed — there is exactly
+  one detection strategy (run a command).
+- ~discovery.rs~: delete entirely.  ~SystemdUnitDiscovery~, ~PidDiscovery~,
+  ~ProcessNameDiscovery~ all move into the user's poller script if needed.
+- ~config.rs~: remove ~DetectorConfig~, ~ProcessDiscoveryConfig~.  Replace
+  with a ~detector_cmd~ field (the command string to run).
+- ~monitor.rs~: simplify — no trait objects for detector or discovery.  The
+  monitor runs the command, parses the output, and does hysteresis + actions.
 
-#+begin_src rustic :results none :exports code
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum GpuDetectorConfig {
-    Amd,
-    Nvidia,
-    Metal,
-}
+** What stays
+
+- ~action.rs~, ~PressureAction~ trait, ~ActionConfig~ — unchanged.
+- ~monitor.rs~ — simplified but same hysteresis state machine.
+- ~config.rs~ — ~PressureConfig~ (threshold, hysteresis, ~poll_interval_ms~),
+  ~ActionConfig~, ~AppConfig~.
+- ~metrics.rs~, ~metrics_server.rs~ — unchanged.
+
+** New config shape
+
+#+begin_src toml :exports code
+[pressure]
+threshold        = 25
+hysteresis       = 3
+poll_interval_ms = 2000
+
+# Command to run as the resource poller.  Must output TSV lines of
+# <value>\t<entity> on stdout.  Exit code 0 means a successful sample.
+detector_cmd = "./scripts/detect-amd-gpu.sh --exclude-unit ollama.service"
+
+[action]
+kind         = "http_post"
+pressure_url = "http://127.0.0.1:9091/control/pause"
+clear_url    = "http://127.0.0.1:9091/control/resume"
 #+end_src
 
-- Provides a factory function to construct the detector:
+** Example poller scripts
 
-#+begin_src rustic :results none :exports code
-pub fn detector_from_config(
-    config: GpuDetectorConfig,
-) -> Box<dyn PressureDetector> { ... }
-#+end_src
+Provide tested example scripts in a ~scripts/~ or ~examples/~ directory.  Each
+script handles its own filtering and child-process logic.
 
-*** ~crates/cli~ changes
+*** AMD GPU (~detect-amd-gpu.sh~)
 
-- ~DetectorConfig~ in CLI config becomes a unified enum that pulls in GPU
-  variants via ~serde(untagged)~ or flattening:
+Reads ~gpu_busy_percent~ from sysfs.  Scans ~/proc/<pid>/fd~ for ~/dev/dri/~
+to find contributing processes.  Accepts a ~--exclude-unit~ flag to exclude a
+systemd unit's cgroup PIDs.
 
-#+begin_src rustic :results none :exports code
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DetectorConfig {
-    Amd,
-    Nvidia,
-    Metal,
-    // Future: Exec { cmd: String, format: OutputFormat },
-}
-#+end_src
+*** NVIDIA GPU (~detect-nvidia-gpu.sh~)
 
-  The match in ~main.rs~ delegates GPU variants to
-  ~proc_siding_gpu_detectors::detector_from_config~.
+Runs ~nvidia-smi --query-gpu=utilization.gpu~.  Scans ~/proc/<pid>/fd~ for
+~/dev/nvidia~ to find contributing processes.  Same ~--exclude-unit~ flag.
 
-- This keeps existing TOML configs working with zero changes.
+*** Metal / macOS GPU (~detect-metal-gpu.sh~)
 
-*** Future: ~Exec~ detector
+Runs ~metalps --json~, parses the JSON, and outputs per-process GPU
+utilization.  Accepts a ~--exclude-pattern~ flag for ~pgrep -f~ based
+exclusion.
 
-A follow-up task can add an ~Exec~ variant to ~DetectorConfig~ that runs a
-user-supplied command and parses a pressure value from stdout.  This would make
-proc-siding fully pluggable at the config level without writing Rust.  Not in
-scope for this task but the architecture should not preclude it.
+*** Intel Arc (note only)
 
-** Intel Arc
+We have no Intel Arc hardware to test on.  Document that ~intel_gpu_top -J~
+(from ~intel-gpu-tools~) can provide per-engine utilization, and that a
+wrapper script following the same TSV contract would work.  Contributions
+welcome.
 
-The Intel Arc discrete GPU uses the ~i915~ (or ~xe~) kernel driver on Linux.
-Utilization can be read from:
+** Testing
 
-- ~intel_gpu_top -J~ (from ~intel-gpu-tools~) — JSON output with per-engine
-  utilization.
-- ~/sys/class/drm/card*/gt/gt*/rc6_residency~ — inverse of busy (residency in
-  idle state); would need the complement.
-
-We have no Intel Arc hardware to test on.  Add a note in the GPU detectors
-documentation indicating that an Intel Arc detector is welcome but untested.
-The ~Exec~ detector (once implemented) would let Intel Arc users bridge the gap
-immediately by wrapping ~intel_gpu_top~.
-
-** Documentation
-
-Add a ~DETECTORS.org~ (or a section in the README) documenting:
-
-- How to use each built-in GPU detector (AMD, NVIDIA, Metal) with example TOML
-  config.
-- How the baseline PID filtering works.
-- Platform requirements for each detector (sysfs access, nvidia-smi, metalps).
-- A note about Intel Arc: no built-in support, no test hardware; contributions
-  welcome; ~Exec~ detector is the interim solution.
+- *Unit tests*: mock the command execution (or use a simple ~echo~ / ~printf~
+  script) and verify that the monitor correctly parses TSV output, sums
+  values, and triggers actions at the right thresholds.
+- *Script tests*: each example script should be runnable in CI (where possible)
+  with a ~--dry-run~ or test mode that validates the output format without
+  requiring actual hardware.  At minimum, test the output parsing contract.
 
 ** Commits
 
-1. Create ~crates/gpu-detectors~ crate with the moved detector implementations
-   and helpers.
-2. Strip GPU-specific code from ~crates/lib/src/detector.rs~, keeping the trait,
-   ~Pid~, and generic error variants.
-3. Remove ~DetectorConfig~ from ~crates/lib/src/config.rs~; move to CLI config.
-4. Update ~crates/cli~ to depend on ~proc-siding-gpu-detectors~ and wire the
-   detector config.
-5. Move ~filter_contributors~ tests to ~crates/gpu-detectors~.
-6. Add documentation with GPU detector examples and Intel Arc note.
+1. Add ~detector_cmd~ to ~AppConfig~ and implement command execution + TSV
+   parsing in the monitor loop.  Keep the old detector/discovery code
+   temporarily so both paths work.
+2. Remove ~PressureDetector~ trait, all GPU detector implementations, Linux
+   helpers, and ~DetectorConfig~ from the library.
+3. Remove ~ProcessDiscovery~ trait, all discovery implementations, and
+   ~ProcessDiscoveryConfig~ from the library.
+4. Simplify ~monitor.rs~ to use command-based detection only.
+5. Update ~main.rs~ wiring and CLI config.
+6. Add example poller scripts for AMD, NVIDIA, and Metal.
+7. Add integration tests for TSV parsing and the monitor's command-based loop.
+8. Update README and add Intel Arc note.
 
 * TODO Sync with ~rust-template~ and lay down ~rust-template.json~
 
