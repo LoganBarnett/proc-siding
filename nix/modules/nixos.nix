@@ -28,8 +28,8 @@ in
       default = { };
       description = ''
         Configuration written verbatim to the proc-siding TOML config file.
-        Mirrors the config.toml structure.  All of pressure, detector,
-        process_discovery, and action sections are required.
+        Mirrors the config.toml structure.  pressure, detector_cmd, and
+        action are required.
       '';
       example = lib.literalExpression ''
         {
@@ -38,11 +38,7 @@ in
             hysteresis = 3;
             poll_interval_ms = 2000;
           };
-          detector.kind = "nvidia";
-          process_discovery = {
-            kind = "systemd_unit";
-            unit = "ollama.service";
-          };
+          detector_cmd = "''${cfg.package}/share/proc-siding/detectors/amd-gpu.sh --exclude-unit ollama.service";
           action = {
             kind = "http_post";
             pressure_url = "http://127.0.0.1:9091/control/pause";
@@ -68,6 +64,9 @@ in
         "network.target"
         "ollama.service"
       ];
+
+      # Detector scripts are executed via sh -c and need common tools on PATH.
+      path = with pkgs; [ bash coreutils findutils gnugrep gawk bc ];
 
       serviceConfig = {
         Type = "simple";

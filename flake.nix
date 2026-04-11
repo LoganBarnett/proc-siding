@@ -128,7 +128,13 @@
     in cratePackages // {
       # Build all workspace binaries together.
       # Update pname to match your project name.
-      default = craneLib.buildPackage (commonArgs // { pname = "proc-siding"; });
+      default = craneLib.buildPackage (commonArgs // {
+        pname = "proc-siding";
+        postInstall = ''
+          mkdir -p $out/share/proc-siding/detectors
+          install -m755 ${./examples/detectors}/*.sh $out/share/proc-siding/detectors/
+        '';
+      });
     });
 
     # ============================================================================

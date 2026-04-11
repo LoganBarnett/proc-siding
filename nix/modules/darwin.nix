@@ -34,8 +34,8 @@ in
       default = { };
       description = ''
         Configuration written verbatim to the proc-siding TOML config file.
-        Mirrors the config.toml structure.  All of pressure, detector,
-        process_discovery, and action sections are required.
+        Mirrors the config.toml structure.  pressure, detector_cmd, and
+        action are required.
       '';
       example = lib.literalExpression ''
         {
@@ -44,11 +44,7 @@ in
             hysteresis = 3;
             poll_interval_ms = 2000;
           };
-          detector.kind = "metal";
-          process_discovery = {
-            kind = "process_name";
-            pattern = "ollama";
-          };
+          detector_cmd = "''${cfg.package}/share/proc-siding/detectors/metal-gpu.sh --exclude-pattern ollama";
           action = {
             kind = "http_post";
             pressure_url = "http://127.0.0.1:9091/control/pause";
@@ -73,6 +69,7 @@ in
       path = [
         cfg.package
         metalps.packages.${system}.default
+        pkgs.jq
       ];
 
       serviceConfig = {
